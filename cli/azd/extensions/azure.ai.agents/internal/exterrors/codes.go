@@ -48,13 +48,21 @@ const (
 	CodeEnvironmentCreationFailed = "environment_creation_failed"
 	CodeEnvironmentValuesFailed   = "environment_values_failed"
 	CodeMissingAiProjectEndpoint  = "missing_ai_project_endpoint"
-	CodeMissingAzureTenantId      = "missing_azure_tenant_id"
-	CodeMissingAiProjectId        = "missing_ai_project_id"
-	CodeMissingAzureSubscription  = "missing_azure_subscription_id"
-	CodeMissingAgentEnvVars       = "missing_agent_env_vars"
-	CodeGitHubDownloadFailed      = "github_download_failed"
-	CodeScaffoldTemplateFailed    = "scaffold_template_failed"
-	CodePromptFailed              = "prompt_failed"
+	// CodeMissingProjectEndpoint signals that the 5-level Foundry project-endpoint
+	// cascade (see project-context spec) found no value. Shared across direct
+	// commands (e.g. `toolbox`, future project-context surfaces); keep here.
+	CodeMissingProjectEndpoint = "missing_project_endpoint"
+	// CodeInvalidProjectEndpoint signals that a project-endpoint value was supplied
+	// (via flag, azd env, user config, or env var) but is malformed — missing
+	// scheme, wrong scheme, or unparseable.
+	CodeInvalidProjectEndpoint   = "invalid_project_endpoint"
+	CodeMissingAzureTenantId     = "missing_azure_tenant_id"
+	CodeMissingAiProjectId       = "missing_ai_project_id"
+	CodeMissingAzureSubscription = "missing_azure_subscription_id"
+	CodeMissingAgentEnvVars      = "missing_agent_env_vars"
+	CodeGitHubDownloadFailed     = "github_download_failed"
+	CodeScaffoldTemplateFailed   = "scaffold_template_failed"
+	CodePromptFailed             = "prompt_failed"
 )
 
 // Error codes commonly used for auth errors.
@@ -104,6 +112,22 @@ const (
 const (
 	CodeInvalidToolbox             = "invalid_toolbox"
 	CodeCreateToolboxVersionFailed = "create_toolbox_version_failed"
+
+	// Codes for the `azd ai agent toolbox` direct command surface.
+	CodeToolboxNotFound               = "toolbox_not_found"
+	CodeMissingUpdateField            = "missing_update_field"
+	CodeDefaultVersionDelete          = "default_version_delete"
+	CodeOnlyVersionDelete             = "only_version_delete"
+	CodeUnsupportedConnectionCategory = "unsupported_connection_category"
+	CodeMissingIndex                  = "missing_index"
+	CodeUnsupportedIndexFlag          = "unsupported_index_flag"
+	CodeDuplicateConnection           = "duplicate_connection"
+	CodeConnectionNotFound            = "connection_not_found"
+	CodeConnectionNotInToolbox        = "connection_not_in_toolbox"
+	CodeLastToolRemoval               = "last_tool_removal"
+	CodeMissingForceFlag              = "missing_force_flag"
+	CodeToolboxTagsUnavailable        = "toolbox_tags_unavailable"
+	CodeInvalidToolboxName            = "invalid_toolbox_name"
 )
 
 // Error codes for connection operations.
@@ -141,17 +165,25 @@ const (
 // Operation names for [ServiceFromAzure] errors.
 // These are prefixed to the Azure error code (e.g., "create_agent.NotFound").
 const (
-	OpGetFoundryProject     = "get_foundry_project"
-	OpContainerBuild        = "container_build"
-	OpContainerPackage      = "container_package"
-	OpContainerPublish      = "container_publish"
-	OpCreateAgent           = "create_agent"
-	OpStartContainer        = "start_container"
-	OpGetContainerOperation = "get_container_operation"
-	OpCreateSession         = "create_session"
-	OpGetSession            = "get_session"
-	OpDeleteSession         = "delete_session"
-	OpListSessions          = "list_sessions"
-	OpCreateToolboxVersion  = "create_toolbox_version"
-	OpGetToolbox            = "get_toolbox"
+	OpGetFoundryProject        = "get_foundry_project"
+	OpContainerBuild           = "container_build"
+	OpContainerPackage         = "container_package"
+	OpContainerPublish         = "container_publish"
+	OpCreateAgent              = "create_agent"
+	OpStartContainer           = "start_container"
+	OpGetContainerOperation    = "get_container_operation"
+	OpCreateSession            = "create_session"
+	OpGetSession               = "get_session"
+	OpDeleteSession            = "delete_session"
+	OpListSessions             = "list_sessions"
+	OpCreateToolboxVersion     = "create_toolbox_version"
+	OpGetToolbox               = "get_toolbox"
+	OpRegisterPendingToolbox   = "register_pending_toolbox"
+	OpDeleteToolbox            = "delete_toolbox"
+	OpDeleteToolboxVersion     = "delete_toolbox_version"
+	OpSetDefaultVersion        = "set_default_version"
+	OpListToolboxes            = "list_toolboxes"
+	OpGetToolboxVersion        = "get_toolbox_version"
+	OpListToolboxVersions      = "list_toolbox_versions"
+	OpResolveProjectConnection = "resolve_project_connection"
 )

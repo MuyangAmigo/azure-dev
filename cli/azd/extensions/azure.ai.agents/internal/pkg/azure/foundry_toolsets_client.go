@@ -214,3 +214,247 @@ func (c *FoundryToolboxClient) DeleteToolbox(
 
 	return nil
 }
+
+// Endpoint returns the toolbox endpoint root used by this client (without trailing slash).
+// Used by the CLI to compute the runtime MCP consumption URL surfaced by `toolbox show`.
+func (c *FoundryToolboxClient) Endpoint() string {
+	return c.endpoint
+}
+
+// PagedToolboxes is a single page of toolboxes.
+type PagedToolboxes struct {
+	Data    []ToolboxObject `json:"data"`
+	HasMore bool            `json:"has_more,omitempty"`
+	LastID  string          `json:"last_id,omitempty"`
+}
+
+// ListToolboxes returns every toolbox visible on the project endpoint by walking pagination.
+func (c *FoundryToolboxClient) ListToolboxes(ctx context.Context) ([]ToolboxObject, error) {
+	all := []ToolboxObject{}
+	after := ""
+	for {
+		page, err := c.listToolboxesPage(ctx, after)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page.Data...)
+		if !page.HasMore || page.LastID == "" {
+			return all, nil
+		}
+		after = page.LastID
+	}
+}
+
+func (c *FoundryToolboxClient) listToolboxesPage(ctx context.Context, after string) (*PagedToolboxes, error) {
+	targetUrl := fmt.Sprintf("%s/toolboxes?api-version=%s", c.endpoint, toolboxesApiVersion)
+	if after != "" {
+		targetUrl += "&after=" + url.QueryEscape(after)
+	}
+
+	req, err := runtime.NewRequest(ctx, http.MethodGet, targetUrl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Raw().Header.Set("Foundry-Features", toolboxesFeatureHeader)
+
+	resp, err := c.pipeline.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if !runtime.HasStatusCode(resp, http.StatusOK) {
+		return nil, runtime.NewResponseError(resp)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var page PagedToolboxes
+	if err := json.Unmarshal(body, &page); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &page, nil
+}
+
+// GetToolboxVersion fetches the full version body, including tools[].
+func (c *FoundryToolboxClient) GetToolboxVersion(
+	ctx context.Context,
+	toolboxName, version string,
+) (*ToolboxVersionObject, error) {
+	targetUrl := fmt.Sprintf(
+		"%s/toolboxes/%s/versions/%s?api-version=%s",
+		c.endpoint, url.PathEscape(toolboxName), url.PathEscape(version), toolboxesApiVersion,
+	)
+
+	req, err := runtime.NewRequest(ctx, http.MethodGet, targetUrl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Raw().Header.Set("Foundry-Features", toolboxesFeatureHeader)
+
+	resp, err := c.pipeline.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if !runtime.HasStatusCode(resp, http.StatusOK) {
+		return nil, runtime.NewResponseError(resp)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var result ToolboxVersionObject
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &result, nil
+}
+
+// PagedToolboxVersions is a single page of toolbox version summaries.
+type PagedToolboxVersions struct {
+	Data    []ToolboxVersionObject `json:"data"`
+	HasMore bool                   `json:"has_more,omitempty"`
+	LastID  string                 `json:"last_id,omitempty"`
+}
+
+// ListToolboxVersions returns all version summaries for the named toolbox.
+func (c *FoundryToolboxClient) ListToolboxVersions(
+	ctx context.Context, toolboxName string,
+) ([]ToolboxVersionObject, error) {
+	all := []ToolboxVersionObject{}
+	after := ""
+	for {
+		page, err := c.listToolboxVersionsPage(ctx, toolboxName, after)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page.Data...)
+		if !page.HasMore || page.LastID == "" {
+			return all, nil
+		}
+		after = page.LastID
+	}
+}
+
+func (c *FoundryToolboxClient) listToolboxVersionsPage(
+	ctx context.Context, toolboxName, after string,
+) (*PagedToolboxVersions, error) {
+	targetUrl := fmt.Sprintf(
+		"%s/toolboxes/%s/versions?api-version=%s",
+		c.endpoint, url.PathEscape(toolboxName), toolboxesApiVersion,
+	)
+	if after != "" {
+		targetUrl += "&after=" + url.QueryEscape(after)
+	}
+
+	req, err := runtime.NewRequest(ctx, http.MethodGet, targetUrl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Raw().Header.Set("Foundry-Features", toolboxesFeatureHeader)
+
+	resp, err := c.pipeline.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if !runtime.HasStatusCode(resp, http.StatusOK) {
+		return nil, runtime.NewResponseError(resp)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var page PagedToolboxVersions
+	if err := json.Unmarshal(body, &page); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &page, nil
+}
+
+// DeleteToolboxVersion deletes a single version. Service returns 400 with
+// `bad_request` if the version is the current `default_version` and other
+// versions exist; the CLI guards this pre-flight.
+func (c *FoundryToolboxClient) DeleteToolboxVersion(
+	ctx context.Context, toolboxName, version string,
+) error {
+	targetUrl := fmt.Sprintf(
+		"%s/toolboxes/%s/versions/%s?api-version=%s",
+		c.endpoint, url.PathEscape(toolboxName), url.PathEscape(version), toolboxesApiVersion,
+	)
+
+	req, err := runtime.NewRequest(ctx, http.MethodDelete, targetUrl)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Raw().Header.Set("Foundry-Features", toolboxesFeatureHeader)
+
+	resp, err := c.pipeline.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if !runtime.HasStatusCode(resp, http.StatusOK, http.StatusNoContent) {
+		return runtime.NewResponseError(resp)
+	}
+	return nil
+}
+
+// SetDefaultVersion PATCHes the toolbox to mark a different version as default.
+func (c *FoundryToolboxClient) SetDefaultVersion(
+	ctx context.Context, toolboxName, version string,
+) (*ToolboxObject, error) {
+	targetUrl := fmt.Sprintf(
+		"%s/toolboxes/%s?api-version=%s",
+		c.endpoint, url.PathEscape(toolboxName), toolboxesApiVersion,
+	)
+
+	payload, err := json.Marshal(map[string]string{"default_version": version})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := runtime.NewRequest(ctx, http.MethodPatch, targetUrl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Raw().Header.Set("Foundry-Features", toolboxesFeatureHeader)
+	if err := req.SetBody(
+		streaming.NopCloser(bytes.NewReader(payload)),
+		"application/json",
+	); err != nil {
+		return nil, fmt.Errorf("failed to set request body: %w", err)
+	}
+
+	resp, err := c.pipeline.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if !runtime.HasStatusCode(resp, http.StatusOK) {
+		return nil, runtime.NewResponseError(resp)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var result ToolboxObject
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &result, nil
+}
