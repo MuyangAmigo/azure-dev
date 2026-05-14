@@ -262,3 +262,11 @@ func logResolvedEndpoint(verb string, r *ResolvedProjectEndpoint) {
 // ErrToolboxNotFound is returned from `show` when the named toolbox does not exist
 // on the service and has no pending record. Callers convert it to a structured error.
 var ErrToolboxNotFound = errors.New("toolbox not found")
+
+// Keep these helpers referenced until Batch 3 (connection subgroup) consumes them.
+// They are intentionally unused right now but are the entry points for resolving
+// project connection categories via the data-plane projects client.
+var (
+	_ = newProjectsClientFromEndpoint
+	_ = parseAccountProjectFromEndpoint
+)
