@@ -11,16 +11,10 @@ import (
 	"azureaiagent/internal/pkg/azure"
 )
 
-// projectConnection is the minimal slice of an Azure project connection
-// that toolbox commands need:
-//
-//   - ID: used as `project_connection_id` in tool entries (§ 5.6).
-//   - Category: ARM `category` (a.k.a. `type` on the data plane) — determines
-//     the tool-entry shape (`mcp` vs `azure_ai_search`).
-//   - Name: the connection's short name; surfaces in `connection list` output
-//     and is used as the tool entry's `name` (no aliasing in v1, § 13).
-//   - Target: the connection's data-plane target URL; becomes `server_url`
-//     on MCP tool entries.
+// projectConnection is the minimal slice of an Azure project connection that
+// toolbox commands need: the ARM `id` (used as `project_connection_id`), the
+// category (drives the tool-entry shape), the short name, and the data-plane
+// `target` (becomes `server_url` on MCP tool entries).
 type projectConnection struct {
 	ID       string
 	Category azure.ConnectionType
@@ -28,23 +22,11 @@ type projectConnection struct {
 	Target   string
 }
 
-// resolveProjectConnection looks up a connection by short name on the project
-// endpoint and returns the minimal metadata the toolbox commands need.
-//
-// Pragmatic deviation from the spec: § 5.6 calls for a control-plane ARM call to
-// `management.azure.com/.../connections/{name}?api-version=2025-04-01-preview`.
-// The data-plane GET /connections already exposes the ARM `id`, `type` (category),
-// and `target`. Using the data plane here keeps a single auth scope and avoids
-// onboarding a second client. The resolved `id` is whatever the data plane returns,
-// which is what downstream service consumers expect as `project_connection_id`.
-//
-// connectionResolver is exposed as an interface so unit tests can substitute it.
+// connectionResolver is the seam that tests substitute with stubConnectionResolver.
 type connectionResolver interface {
 	resolveConnection(ctx context.Context, endpoint, name string) (*projectConnection, error)
 }
 
-// defaultConnectionResolver is the production resolver backed by the data-plane
-// projects client.
 type defaultConnectionResolver struct{}
 
 func (defaultConnectionResolver) resolveConnection(
@@ -59,12 +41,7 @@ func (defaultConnectionResolver) resolveConnection(
 		)
 	}
 
-	// We could fetch a single connection by name, but the data-plane endpoint with
-	// trailing /getConnectionWithCredentials surfaces credentials we don't need
-	// (and shouldn't request). The plain list endpoint is paginated; for v1 we
-	// walk all pages and pick by name. This stays under one HTTP call in the
-	// common case (few connections per project).
-	conns, err := client.GetAllConnections(ctx)
+	conn, err := client.GetConnection(ctx, name)
 	if err != nil {
 		if isAzureNotFound(err) {
 			return nil, connectionNotFoundError(name)
@@ -72,21 +49,14 @@ func (defaultConnectionResolver) resolveConnection(
 		return nil, exterrors.ServiceFromAzure(err, exterrors.OpResolveProjectConnection)
 	}
 
-	for _, c := range conns {
-		if c.Name == name {
-			return &projectConnection{
-				ID:       c.ID,
-				Category: c.Type,
-				Name:     c.Name,
-				Target:   c.Target,
-			}, nil
-		}
-	}
-	return nil, connectionNotFoundError(name)
+	return &projectConnection{
+		ID:       conn.ID,
+		Category: conn.Type,
+		Name:     conn.Name,
+		Target:   conn.Target,
+	}, nil
 }
 
-// connectionNotFoundError builds the standard 'connection not found' validation
-// error per § 5.6 with the helpful follow-up suggestion.
 func connectionNotFoundError(name string) error {
 	return exterrors.Validation(
 		exterrors.CodeConnectionNotFound,

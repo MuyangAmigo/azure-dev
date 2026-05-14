@@ -5,8 +5,8 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"log"
 
 	"azureaiagent/internal/exterrors"
 
@@ -49,11 +49,7 @@ toolbox).`,
 		&flags.force, "force", false,
 		"Skip confirmation prompts and override safety checks where allowed.",
 	)
-	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
-		Name:          "output",
-		AllowedValues: []string{"table", "json"},
-		Default:       "table",
-	})
+	registerToolboxOutputFlag(cmd)
 
 	return cmd
 }
@@ -93,7 +89,7 @@ func runToolboxDeleteWith(
 	if verb.version == "" {
 		return runDeleteToolbox(ctx, client, endpoint, name, verb, parent)
 	}
-	return runDeleteToolboxVersion(ctx, client, name, verb, parent)
+	return runDeleteToolboxVersion(ctx, client, endpoint, name, verb, parent)
 }
 
 // runDeleteToolbox handles `toolbox delete <name>` (no --version).
@@ -101,75 +97,71 @@ func runDeleteToolbox(
 	ctx context.Context, client toolboxClient, endpoint, name string,
 	verb toolboxDeleteFlags, parent toolboxFlags,
 ) error {
-	azdClient, err := azdext.NewAzdClient()
-	if err != nil {
-		return exterrors.Internal(exterrors.CodeAzdClientFailed,
-			fmt.Sprintf("failed to create azd client: %s", err))
-	}
-	defer azdClient.Close()
+	return withAzdClient(func(azdClient *azdext.AzdClient) error {
+		// Best-effort pending lookup; a read failure is logged but non-fatal.
+		pending, err := getPendingToolbox(ctx, azdClient, endpoint, name)
+		if err != nil {
+			log.Printf("toolbox delete: pending-toolbox read failed for %q: %v", name, err)
+		}
 
-	pending, _ := getPendingToolbox(ctx, azdClient, endpoint, name)
-
-	_, getErr := client.GetToolbox(ctx, name)
-	switch {
-	case getErr == nil:
-		// Live toolbox.
-		if !verb.force {
-			confirmed, err := confirmToolboxDelete(ctx, azdClient,
-				fmt.Sprintf("Delete toolbox %q (cascades to every version)?", name))
-			if err != nil {
-				return err
+		_, getErr := client.GetToolbox(ctx, name)
+		switch {
+		case getErr == nil:
+			// Live toolbox.
+			if !verb.force {
+				confirmed, err := confirmToolboxDelete(ctx, azdClient,
+					fmt.Sprintf("Delete toolbox %q (cascades to every version)?", name))
+				if err != nil {
+					return err
+				}
+				if !confirmed {
+					fmt.Println("Aborted.")
+					return nil
+				}
 			}
-			if !confirmed {
-				fmt.Println("Aborted.")
+			if err := client.DeleteToolbox(ctx, name); err != nil && !isAzureNotFound(err) {
+				return exterrors.ServiceFromAzure(err, exterrors.OpDeleteToolbox)
+			}
+			// Best-effort clear of any local pending record (non-fatal).
+			if _, err := clearPendingToolbox(ctx, azdClient, endpoint, name); err != nil {
+				log.Printf("toolbox delete: failed to clear pending record for %q: %v", name, err)
+			}
+			return emitDeleteResult(name, "", "deleted", parent.output)
+
+		case isAzureNotFound(getErr):
+			if pending != nil {
+				if _, err := clearPendingToolbox(ctx, azdClient, endpoint, name); err != nil {
+					return exterrors.Internal(exterrors.CodePendingToolboxStoreFailed, err.Error())
+				}
+				if parent.output == "json" {
+					return emitDeleteResult(name, "", "pending_cleared", parent.output)
+				}
+				fmt.Printf("Cleared pending toolbox %s.\n", name)
 				return nil
 			}
-		}
-		if err := client.DeleteToolbox(ctx, name); err != nil && !isAzureNotFound(err) {
-			return exterrors.ServiceFromAzure(err, exterrors.OpDeleteToolbox)
-		}
-		_, _ = clearPendingToolbox(ctx, azdClient, endpoint, name)
-		return emitDeleteResult(name, "", "deleted", parent.output)
+			return exterrors.Dependency(
+				exterrors.CodeToolboxNotFound,
+				fmt.Sprintf("toolbox %q not found at %s", name, endpoint),
+				"run 'azd ai agent toolbox list' to see available toolboxes",
+			)
 
-	case isAzureNotFound(getErr):
-		if pending != nil {
-			if _, err := clearPendingToolbox(ctx, azdClient, endpoint, name); err != nil {
-				return exterrors.Internal(exterrors.OpRegisterPendingToolbox, err.Error())
-			}
-			if parent.output == "json" {
-				return emitDeleteResult(name, "", "pending_cleared", parent.output)
-			}
-			fmt.Printf("Cleared pending toolbox %s.\n", name)
-			return nil
+		default:
+			return exterrors.ServiceFromAzure(getErr, exterrors.OpGetToolbox)
 		}
-		return exterrors.Validation(
-			exterrors.CodeToolboxNotFound,
-			fmt.Sprintf("toolbox %q not found at %s", name, endpoint),
-			"run 'azd ai agent toolbox list' to see available toolboxes",
-		)
-
-	default:
-		return exterrors.ServiceFromAzure(getErr, exterrors.OpGetToolbox)
-	}
+	})
 }
 
 // runDeleteToolboxVersion handles `toolbox delete <name> --version <n>`.
 func runDeleteToolboxVersion(
-	ctx context.Context, client toolboxClient, name string,
+	ctx context.Context, client toolboxClient, endpoint, name string,
 	verb toolboxDeleteFlags, parent toolboxFlags,
 ) error {
 	tb, err := client.GetToolbox(ctx, name)
 	if err != nil {
-		if isAzureNotFound(err) {
-			return exterrors.Validation(
-				exterrors.CodeToolboxNotFound,
-				fmt.Sprintf("toolbox %q not found", name),
-				"run 'azd ai agent toolbox list' to see available toolboxes",
-			)
-		}
-		return exterrors.ServiceFromAzure(err, exterrors.OpGetToolbox)
+		return toolboxNotFoundOrService(err, name, exterrors.OpGetToolbox)
 	}
 
+	cascaded := false
 	if verb.version == tb.DefaultVersion {
 		versions, err := client.ListToolboxVersions(ctx, name)
 		if err != nil {
@@ -195,33 +187,35 @@ func runDeleteToolboxVersion(
 					"version %q is the only remaining version of toolbox %q; "+
 						"deleting it removes the toolbox", verb.version, name,
 				),
-				"run `azd ai agent toolbox delete "+name+"` to delete the toolbox, "+
-					"or pass --force to confirm",
+				fmt.Sprintf(
+					"run `azd ai agent toolbox delete %q` to delete the toolbox, "+
+						"or pass --force to confirm",
+					name,
+				),
 			)
 		}
-	} else if !verb.force {
-		azdClient, err := azdext.NewAzdClient()
-		if err != nil {
-			return exterrors.Internal(exterrors.CodeAzdClientFailed,
-				fmt.Sprintf("failed to create azd client: %s", err))
-		}
-		defer azdClient.Close()
-		confirmed, err := confirmToolboxDelete(ctx, azdClient,
-			fmt.Sprintf("Delete version %q of toolbox %q?", verb.version, name))
-		if err != nil {
-			return err
-		}
-		if !confirmed {
-			fmt.Println("Aborted.")
-			return nil
-		}
+		cascaded = true
 	}
+	// NOTE: spec § 5.3 row 3 specifies DELETE /toolboxes/{name}/versions/{n}
+	// with no prompt for non-default versions. We intentionally do not add a
+	// confirmation here even when not running with --force, to match the spec.
 
 	if err := client.DeleteToolboxVersion(ctx, name, verb.version); err != nil {
 		return exterrors.ServiceFromAzure(err, exterrors.OpDeleteToolboxVersion)
 	}
 
-	if verb.version == tb.DefaultVersion {
+	if cascaded {
+		// Server cascaded the parent toolbox away — best-effort clear of any
+		// local pending record so the name doesn't linger in `toolbox list`.
+		_ = withAzdClient(func(azdClient *azdext.AzdClient) error {
+			if _, err := clearPendingToolbox(ctx, azdClient, endpoint, name); err != nil {
+				log.Printf(
+					"toolbox delete: failed to clear pending record after cascade for %q: %v",
+					name, err,
+				)
+			}
+			return nil
+		})
 		if parent.output == "json" {
 			return emitDeleteResult(name, verb.version, "toolbox_cascaded", parent.output)
 		}
@@ -255,12 +249,7 @@ func emitDeleteResult(name, version, outcome, output string) error {
 			"version": version,
 			"outcome": outcome,
 		}
-		data, err := json.MarshalIndent(payload, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal delete result: %w", err)
-		}
-		fmt.Println(string(data))
-		return nil
+		return emitJSON(payload)
 	}
 	switch outcome {
 	case "deleted":

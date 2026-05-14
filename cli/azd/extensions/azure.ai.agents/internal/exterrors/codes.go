@@ -48,21 +48,15 @@ const (
 	CodeEnvironmentCreationFailed = "environment_creation_failed"
 	CodeEnvironmentValuesFailed   = "environment_values_failed"
 	CodeMissingAiProjectEndpoint  = "missing_ai_project_endpoint"
-	// CodeMissingProjectEndpoint signals that the 5-level Foundry project-endpoint
-	// cascade (see project-context spec) found no value. Shared across direct
-	// commands (e.g. `toolbox`, future project-context surfaces); keep here.
-	CodeMissingProjectEndpoint = "missing_project_endpoint"
-	// CodeInvalidProjectEndpoint signals that a project-endpoint value was supplied
-	// (via flag, azd env, user config, or env var) but is malformed — missing
-	// scheme, wrong scheme, or unparseable.
-	CodeInvalidProjectEndpoint   = "invalid_project_endpoint"
-	CodeMissingAzureTenantId     = "missing_azure_tenant_id"
-	CodeMissingAiProjectId       = "missing_ai_project_id"
-	CodeMissingAzureSubscription = "missing_azure_subscription_id"
-	CodeMissingAgentEnvVars      = "missing_agent_env_vars"
-	CodeGitHubDownloadFailed     = "github_download_failed"
-	CodeScaffoldTemplateFailed   = "scaffold_template_failed"
-	CodePromptFailed             = "prompt_failed"
+	CodeMissingProjectEndpoint    = "missing_project_endpoint"
+	CodeInvalidProjectEndpoint    = "invalid_project_endpoint"
+	CodeMissingAzureTenantId      = "missing_azure_tenant_id"
+	CodeMissingAiProjectId        = "missing_ai_project_id"
+	CodeMissingAzureSubscription  = "missing_azure_subscription_id"
+	CodeMissingAgentEnvVars       = "missing_agent_env_vars"
+	CodeGitHubDownloadFailed      = "github_download_failed"
+	CodeScaffoldTemplateFailed    = "scaffold_template_failed"
+	CodePromptFailed              = "prompt_failed"
 )
 
 // Error codes commonly used for auth errors.
@@ -110,10 +104,8 @@ const (
 
 // Error codes for toolbox operations.
 const (
-	CodeInvalidToolbox             = "invalid_toolbox"
-	CodeCreateToolboxVersionFailed = "create_toolbox_version_failed"
-
-	// Codes for the `azd ai agent toolbox` direct command surface.
+	CodeInvalidToolbox                = "invalid_toolbox"
+	CodeCreateToolboxVersionFailed    = "create_toolbox_version_failed"
 	CodeToolboxNotFound               = "toolbox_not_found"
 	CodeMissingUpdateField            = "missing_update_field"
 	CodeDefaultVersionDelete          = "default_version_delete"
@@ -124,10 +116,12 @@ const (
 	CodeDuplicateConnection           = "duplicate_connection"
 	CodeConnectionNotFound            = "connection_not_found"
 	CodeConnectionNotInToolbox        = "connection_not_in_toolbox"
+	CodeConnectionMissingTarget       = "connection_missing_target"
 	CodeLastToolRemoval               = "last_tool_removal"
 	CodeMissingForceFlag              = "missing_force_flag"
 	CodeToolboxTagsUnavailable        = "toolbox_tags_unavailable"
 	CodeInvalidToolboxName            = "invalid_toolbox_name"
+	CodePendingToolboxStoreFailed     = "pending_toolbox_store_failed"
 )
 
 // Error codes for connection operations.
@@ -178,7 +172,6 @@ const (
 	OpListSessions             = "list_sessions"
 	OpCreateToolboxVersion     = "create_toolbox_version"
 	OpGetToolbox               = "get_toolbox"
-	OpRegisterPendingToolbox   = "register_pending_toolbox"
 	OpDeleteToolbox            = "delete_toolbox"
 	OpDeleteToolboxVersion     = "delete_toolbox_version"
 	OpSetDefaultVersion        = "set_default_version"

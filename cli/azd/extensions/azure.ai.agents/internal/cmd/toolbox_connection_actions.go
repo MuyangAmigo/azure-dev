@@ -5,7 +5,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -39,11 +38,7 @@ tools (use 'toolbox delete' instead).`,
 			)
 		},
 	}
-	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
-		Name:          "output",
-		AllowedValues: []string{"table", "json"},
-		Default:       "table",
-	})
+	registerToolboxOutputFlag(cmd)
 	return cmd
 }
 
@@ -86,14 +81,7 @@ func runConnectionRemoveWith(
 
 	tb, err := client.GetToolbox(ctx, toolboxName)
 	if err != nil {
-		if isAzureNotFound(err) {
-			return exterrors.Validation(
-				exterrors.CodeToolboxNotFound,
-				fmt.Sprintf("toolbox %q not found", toolboxName),
-				"run 'azd ai agent toolbox list' to see available toolboxes",
-			)
-		}
-		return exterrors.ServiceFromAzure(err, exterrors.OpGetToolbox)
+		return toolboxNotFoundOrService(err, toolboxName, exterrors.OpGetToolbox)
 	}
 
 	current, err := client.GetToolboxVersion(ctx, toolboxName, tb.DefaultVersion)
@@ -109,7 +97,7 @@ func runConnectionRemoveWith(
 				"connection %q is not attached to toolbox %q's current default version",
 				connName, toolboxName,
 			),
-			"run 'azd ai agent toolbox connection list "+toolboxName+"'",
+			fmt.Sprintf("run 'azd ai agent toolbox connection list %q'", toolboxName),
 		)
 	}
 	if len(filtered) == 0 {
@@ -119,7 +107,10 @@ func runConnectionRemoveWith(
 				"removing %q would leave toolbox %q with zero tools",
 				connName, toolboxName,
 			),
-			"delete the toolbox with `azd ai agent toolbox delete "+toolboxName+"` instead",
+			fmt.Sprintf(
+				"delete the toolbox with `azd ai agent toolbox delete %q` instead",
+				toolboxName,
+			),
 		)
 	}
 
@@ -144,26 +135,9 @@ func runConnectionRemoveWith(
 // `removed` reports whether at least one entry was filtered.
 func filterOutConnection(tools []map[string]any, connID string) (result []map[string]any, removed bool) {
 	for _, t := range tools {
-		if id, ok := t["project_connection_id"].(string); ok && id == connID {
+		if toolEntryReferences(t, func(id string) bool { return id == connID }) {
 			removed = true
 			continue
-		}
-		if search, ok := t["azure_ai_search"].(map[string]any); ok {
-			if indexes, ok := search["indexes"].([]any); ok {
-				match := false
-				for _, idx := range indexes {
-					if m, ok := idx.(map[string]any); ok {
-						if id, ok := m["project_connection_id"].(string); ok && id == connID {
-							match = true
-							break
-						}
-					}
-				}
-				if match {
-					removed = true
-					continue
-				}
-			}
 		}
 		result = append(result, t)
 	}
@@ -180,12 +154,7 @@ func emitConnectionRemoveResult(
 			"connection":   conn.Name,
 			"connectionId": conn.ID,
 		}
-		data, err := json.MarshalIndent(payload, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal remove result: %w", err)
-		}
-		fmt.Println(string(data))
-		return nil
+		return emitJSON(payload)
 	}
 	fmt.Printf(
 		"Detached connection %s from toolbox %s (now at version %s).\n",
@@ -206,11 +175,7 @@ func newToolboxConnectionListCommand(extCtx *azdext.ExtensionContext) *cobra.Com
 			return runConnectionList(cmd.Context(), args[0], readToolboxFlags(cmd, extCtx))
 		},
 	}
-	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
-		Name:          "output",
-		AllowedValues: []string{"table", "json"},
-		Default:       "table",
-	})
+	registerToolboxOutputFlag(cmd)
 	return cmd
 }
 
@@ -236,14 +201,7 @@ func runConnectionListWith(
 ) error {
 	tb, err := client.GetToolbox(ctx, toolboxName)
 	if err != nil {
-		if isAzureNotFound(err) {
-			return exterrors.Validation(
-				exterrors.CodeToolboxNotFound,
-				fmt.Sprintf("toolbox %q not found", toolboxName),
-				"run 'azd ai agent toolbox list' to see available toolboxes",
-			)
-		}
-		return exterrors.ServiceFromAzure(err, exterrors.OpGetToolbox)
+		return toolboxNotFoundOrService(err, toolboxName, exterrors.OpGetToolbox)
 	}
 
 	version, err := client.GetToolboxVersion(ctx, toolboxName, tb.DefaultVersion)
@@ -254,12 +212,7 @@ func runConnectionListWith(
 	connections := extractConnectionTools(version.Tools)
 
 	if parent.output == "json" {
-		data, err := json.MarshalIndent(map[string]any{"connections": connections}, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal connection list: %w", err)
-		}
-		fmt.Println(string(data))
-		return nil
+		return emitJSON(map[string]any{"connections": connections})
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)

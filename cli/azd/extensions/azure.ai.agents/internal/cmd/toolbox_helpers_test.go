@@ -19,8 +19,8 @@ import (
 func requireLocalError(t *testing.T, err error, code string) *azdext.LocalError {
 	t.Helper()
 	require.Error(t, err)
-	var le *azdext.LocalError
-	require.True(t, errors.As(err, &le), "expected LocalError, got %T: %v", err, err)
+	le, ok := errors.AsType[*azdext.LocalError](err)
+	require.True(t, ok, "expected LocalError, got %T: %v", err, err)
 	assert.Equal(t, code, le.Code, "code mismatch in %v", le)
 	return le
 }
@@ -149,6 +149,17 @@ func TestBuildToolEntry(t *testing.T) {
 		requireLocalError(t, err, exterrors.CodeUnsupportedIndexFlag)
 	})
 
+	t.Run("RemoteTool rejects empty target", func(t *testing.T) {
+		_, err := buildToolEntry(&projectConnection{
+			ID:       "/c/x",
+			Category: azure.ConnectionTypeRemoteTool,
+			Name:     "x",
+			Target:   "  ", // whitespace-only is treated as empty
+		}, "")
+		le := requireLocalError(t, err, exterrors.CodeConnectionMissingTarget)
+		assert.Contains(t, le.Message, "target URL")
+	})
+
 	t.Run("CognitiveSearch requires --index", func(t *testing.T) {
 		_, err := buildToolEntry(&projectConnection{
 			Category: azure.ConnectionTypeCognitiveSearch,
@@ -249,6 +260,16 @@ func TestBuildToolboxMcpURL(t *testing.T) {
 		"https://acct.services.ai.azure.com/api/projects/p/toolboxes/research/versions/3/mcp?api-version=v1",
 		got,
 	)
+
+	// Service-supplied version strings could in theory contain unsafe URL chars.
+	// Both segments must be PathEscaped so downstream consumers can use the URL
+	// without parsing surprises.
+	escaped := buildToolboxMcpURL(
+		"https://acct.services.ai.azure.com/api/projects/p",
+		"research",
+		"v 1/2", // space and slash require escaping
+	)
+	assert.Contains(t, escaped, "versions/v%201%2F2/mcp")
 }
 
 func TestEndpointBucketKey(t *testing.T) {

@@ -5,7 +5,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -21,10 +20,7 @@ type toolboxUpdateFlags struct {
 }
 
 // newToolboxUpdateCommand returns the `azd ai agent toolbox update <name>` command.
-//
-// PATCH /toolboxes/{name} only accepts default_version (§ 4.1, § 5.2). Description
-// and metadata edits go through `connection add` / `connection remove` which
-// publish a new version carrying forward those fields.
+// Only --default-version is supported (§ 5.2).
 func newToolboxUpdateCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
 	extCtx = ensureExtensionContext(extCtx)
 	flags := &toolboxUpdateFlags{}
@@ -47,11 +43,7 @@ description or the tool list, publish a new version with 'connection add' or
 		&flags.defaultVersion, "default-version", "",
 		"Version string to mark as the default for this toolbox.",
 	)
-	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
-		Name:          "output",
-		AllowedValues: []string{"table", "json"},
-		Default:       "table",
-	})
+	registerToolboxOutputFlag(cmd)
 
 	return cmd
 }
@@ -82,23 +74,11 @@ func runToolboxUpdate(
 
 	result, err := client.SetDefaultVersion(ctx, name, verb.defaultVersion)
 	if err != nil {
-		if isAzureNotFound(err) {
-			return exterrors.Validation(
-				exterrors.CodeToolboxNotFound,
-				fmt.Sprintf("toolbox %q not found at %s", name, resolved.Endpoint),
-				"run 'azd ai agent toolbox list' to see available toolboxes",
-			)
-		}
-		return exterrors.ServiceFromAzure(err, exterrors.OpSetDefaultVersion)
+		return toolboxNotFoundOrService(err, name, exterrors.OpSetDefaultVersion)
 	}
 
 	if parent.output == "json" {
-		data, err := json.MarshalIndent(result, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal update result: %w", err)
-		}
-		fmt.Println(string(data))
-		return nil
+		return emitJSON(result)
 	}
 	fmt.Printf("Toolbox %s default version set to %s.\n", name, result.DefaultVersion)
 	return nil

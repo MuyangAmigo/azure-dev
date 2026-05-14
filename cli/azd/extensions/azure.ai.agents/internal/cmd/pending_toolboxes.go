@@ -32,17 +32,10 @@ type pendingToolboxBucket struct {
 	Items    map[string]PendingToolbox `json:"items,omitempty"`
 }
 
-// endpointBucketKey returns the short opaque key used to bucket pending records
-// per endpoint. The hash is for key brevity only (not secrecy).
-//
-// FORMAT IS LOAD-BEARING — DO NOT CHANGE.
-//
-// `hex.EncodeToString(h[:8])` returns exactly 16 hex chars (8 bytes × 2 per byte),
-// which is what § 7 of the design spec pins as `hex(sha256(endpoint))[:16]`.
-// `hex.EncodeToString(h[:])[:16]` looks equivalent but encodes a different set
-// of bytes (first 8 of the full 32-byte digest, then truncates the 64-char
-// string). The collision risk is similar but the key VALUE differs, which would
-// orphan every existing pending-toolbox record in users' config stores.
+// endpointBucketKey returns the 16-hex-char opaque key used to bucket pending
+// records per endpoint, per spec § 7. The key shape (hex.EncodeToString of the
+// first 8 bytes of the sha256 digest) is part of the persisted config schema:
+// changing it would orphan every existing record.
 func endpointBucketKey(endpoint string) string {
 	normalized := normalizePendingEndpoint(endpoint)
 	h := sha256.Sum256([]byte(normalized))
@@ -168,4 +161,42 @@ func listPendingToolboxes(
 		return nil, err
 	}
 	return bucket.Items, nil
+}
+
+// pendingToolboxStore is the seam used by commands that need to read or clear
+// pending records. The production implementation is azd-host-backed; tests
+// substitute an in-memory stub.
+type pendingToolboxStore interface {
+	// Get returns the pending record for (endpoint, name), or (nil, nil) when
+	// absent. A non-nil error means the store could not be consulted at all.
+	Get(ctx context.Context, endpoint, name string) (*PendingToolbox, error)
+	// Clear removes a single pending record. Reports whether an entry was present.
+	Clear(ctx context.Context, endpoint, name string) (bool, error)
+}
+
+type azdPendingToolboxStore struct {
+	azdClient *azdext.AzdClient
+}
+
+func (s *azdPendingToolboxStore) Get(
+	ctx context.Context, endpoint, name string,
+) (*PendingToolbox, error) {
+	return getPendingToolbox(ctx, s.azdClient, endpoint, name)
+}
+
+func (s *azdPendingToolboxStore) Clear(
+	ctx context.Context, endpoint, name string,
+) (bool, error) {
+	return clearPendingToolbox(ctx, s.azdClient, endpoint, name)
+}
+
+// newAzdPendingToolboxStore opens the production store. The caller must invoke
+// the returned closer (via defer) to release the underlying azd client.
+func newAzdPendingToolboxStore() (pendingToolboxStore, func(), error) {
+	c, err := azdext.NewAzdClient()
+	if err != nil {
+		return nil, func() {}, err
+	}
+	closer := func() { c.Close() }
+	return &azdPendingToolboxStore{azdClient: c}, closer, nil
 }

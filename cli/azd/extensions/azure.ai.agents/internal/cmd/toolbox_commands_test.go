@@ -4,7 +4,7 @@
 package cmd
 
 import (
-	"context"
+	"errors"
 	"testing"
 
 	"azureaiagent/internal/exterrors"
@@ -22,7 +22,7 @@ func TestRunToolboxDeleteWith_Branches(t *testing.T) {
 		// The default getResults returns NotFound for unknown names.
 		client := newMockToolboxClient("https://e/")
 		err := runDeleteToolboxVersion(
-			context.Background(), client, "missing",
+			t.Context(), client, "https://e/", "missing",
 			toolboxDeleteFlags{version: "1", force: true}, toolboxFlags{output: "table"},
 		)
 		requireLocalError(t, err, exterrors.CodeToolboxNotFound)
@@ -38,7 +38,7 @@ func TestRunToolboxDeleteWith_Branches(t *testing.T) {
 			{Name: "tb", Version: "1"}, {Name: "tb", Version: "2"},
 		}
 		err := runDeleteToolboxVersion(
-			context.Background(), client, "tb",
+			t.Context(), client, "https://e/", "tb",
 			toolboxDeleteFlags{version: "2", force: true}, toolboxFlags{output: "table"},
 		)
 		le := requireLocalError(t, err, exterrors.CodeDefaultVersionDelete)
@@ -55,7 +55,7 @@ func TestRunToolboxDeleteWith_Branches(t *testing.T) {
 			{Name: "tb", Version: "1"},
 		}
 		err := runDeleteToolboxVersion(
-			context.Background(), client, "tb",
+			t.Context(), client, "https://e/", "tb",
 			toolboxDeleteFlags{version: "1", force: false}, toolboxFlags{output: "table"},
 		)
 		requireLocalError(t, err, exterrors.CodeOnlyVersionDelete)
@@ -71,7 +71,7 @@ func TestRunToolboxDeleteWith_Branches(t *testing.T) {
 			{Name: "tb", Version: "1"},
 		}
 		err := runDeleteToolboxVersion(
-			context.Background(), client, "tb",
+			t.Context(), client, "https://e/", "tb",
 			toolboxDeleteFlags{version: "1", force: true}, toolboxFlags{output: "json"},
 		)
 		require.NoError(t, err)
@@ -86,18 +86,33 @@ func TestRunToolboxDeleteWith_Branches(t *testing.T) {
 			Name: "tb", DefaultVersion: "5",
 		}}
 		err := runDeleteToolboxVersion(
-			context.Background(), client, "tb",
+			t.Context(), client, "https://e/", "tb",
 			toolboxDeleteFlags{version: "3", force: true}, toolboxFlags{output: "json"},
 		)
 		require.NoError(t, err)
 		require.Len(t, client.deleteVersionCalls, 1)
 		assert.Equal(t, "3", client.deleteVersionCalls[0].version)
 	})
+
+	// § 5.3 row 3: non-default version delete has no confirmation prompt.
+	t.Run("non_default_version_without_force_does_not_prompt", func(t *testing.T) {
+		client := newMockToolboxClient("https://e/")
+		client.getResults["tb"] = toolboxGetResult{obj: &azure.ToolboxObject{
+			Name: "tb", DefaultVersion: "5",
+		}}
+		err := runDeleteToolboxVersion(
+			t.Context(), client, "https://e/", "tb",
+			toolboxDeleteFlags{version: "3", force: false}, toolboxFlags{output: "json"},
+		)
+		require.NoError(t, err)
+		require.Len(t, client.deleteVersionCalls, 1,
+			"non-default version delete must proceed without prompting")
+	})
 }
 
 func TestRunToolboxDelete_NoPromptWithoutForce(t *testing.T) {
 	err := runToolboxDelete(
-		context.Background(), "x",
+		t.Context(), "x",
 		toolboxDeleteFlags{},
 		toolboxFlags{output: "table", noPrompt: true},
 	)
@@ -106,7 +121,7 @@ func TestRunToolboxDelete_NoPromptWithoutForce(t *testing.T) {
 
 func TestRunToolboxDelete_InvalidName(t *testing.T) {
 	err := runToolboxDelete(
-		context.Background(), "bad/name",
+		t.Context(), "bad/name",
 		toolboxDeleteFlags{force: true},
 		toolboxFlags{output: "table"},
 	)
@@ -125,7 +140,7 @@ func TestRunToolboxShowWith_LiveAndVersionMissing(t *testing.T) {
 			},
 		}}
 		err := runToolboxShowWith(
-			context.Background(), client, "https://e/", "tb",
+			t.Context(), client, "https://e/", "tb",
 			toolboxShowFlags{}, toolboxFlags{output: "json"},
 		)
 		require.NoError(t, err)
@@ -137,7 +152,7 @@ func TestRunToolboxShowWith_LiveAndVersionMissing(t *testing.T) {
 			Name: "tb", DefaultVersion: "1",
 		}}
 		err := runToolboxShowWith(
-			context.Background(), client, "https://e/", "tb",
+			t.Context(), client, "https://e/", "tb",
 			toolboxShowFlags{version: "9"}, toolboxFlags{output: "table"},
 		)
 		requireLocalError(t, err, exterrors.CodeToolboxNotFound)
@@ -145,8 +160,6 @@ func TestRunToolboxShowWith_LiveAndVersionMissing(t *testing.T) {
 }
 
 func TestRunToolboxListWith_MergesNoPending(t *testing.T) {
-	// listPendingToolboxes returns an empty map when there's no azd client (tests
-	// don't run AzdClient setup), so this path validates the live merge alone.
 	client := newMockToolboxClient("https://e/")
 	client.listToolboxesResult = []azure.ToolboxObject{
 		{Name: "alpha", DefaultVersion: "1"},
@@ -162,7 +175,7 @@ func TestRunToolboxListWith_MergesNoPending(t *testing.T) {
 	}}
 
 	err := runToolboxListWith(
-		context.Background(), client, "https://e/", toolboxFlags{output: "json"},
+		t.Context(), client, "https://e/", toolboxFlags{output: "json"},
 	)
 	require.NoError(t, err)
 }
@@ -184,7 +197,7 @@ func TestRunConnectionAddWith_DuplicateRejected(t *testing.T) {
 	}
 
 	err := runConnectionAddWith(
-		context.Background(), client, resolver, "https://e/",
+		t.Context(), client, resolver, newStubPendingStore(), "https://e/",
 		"tb", "x", connectionAddFlags{}, toolboxFlags{output: "json"},
 	)
 	requireLocalError(t, err, exterrors.CodeDuplicateConnection)
@@ -208,7 +221,7 @@ func TestRunConnectionAddWith_AppendsAndPromotesDefault(t *testing.T) {
 	}
 
 	err := runConnectionAddWith(
-		context.Background(), client, resolver, "https://e/",
+		t.Context(), client, resolver, newStubPendingStore(), "https://e/",
 		"tb", "b", connectionAddFlags{}, toolboxFlags{output: "json"},
 	)
 	require.NoError(t, err)
@@ -227,7 +240,7 @@ func TestRunConnectionAddWith_ConnectionNotFound(t *testing.T) {
 
 	resolver := newStubConnectionResolver()
 	err := runConnectionAddWith(
-		context.Background(), client, resolver, "https://e/",
+		t.Context(), client, resolver, newStubPendingStore(), "https://e/",
 		"tb", "missing", connectionAddFlags{}, toolboxFlags{output: "table"},
 	)
 	requireLocalError(t, err, exterrors.CodeConnectionNotFound)
@@ -248,7 +261,7 @@ func TestRunConnectionRemoveWith_LastToolBlocks(t *testing.T) {
 	}
 
 	err := runConnectionRemoveWith(
-		context.Background(), client, resolver, "https://e/",
+		t.Context(), client, resolver, "https://e/",
 		"tb", "a", toolboxFlags{output: "table"},
 	)
 	requireLocalError(t, err, exterrors.CodeLastToolRemoval)
@@ -270,7 +283,7 @@ func TestRunConnectionRemoveWith_FilteredAndPromoted(t *testing.T) {
 	}
 
 	err := runConnectionRemoveWith(
-		context.Background(), client, resolver, "https://e/",
+		t.Context(), client, resolver, "https://e/",
 		"tb", "a", toolboxFlags{output: "json"},
 	)
 	require.NoError(t, err)
@@ -293,7 +306,7 @@ func TestRunConnectionRemoveWith_ConnectionNotInToolbox(t *testing.T) {
 	}
 
 	err := runConnectionRemoveWith(
-		context.Background(), client, resolver, "https://e/",
+		t.Context(), client, resolver, "https://e/",
 		"tb", "a", toolboxFlags{output: "table"},
 	)
 	requireLocalError(t, err, exterrors.CodeConnectionNotInToolbox)
@@ -319,7 +332,7 @@ func TestRunConnectionListWith_EmitsAllShapes(t *testing.T) {
 	}}
 
 	err := runConnectionListWith(
-		context.Background(), client, "tb", toolboxFlags{output: "json"},
+		t.Context(), client, "tb", toolboxFlags{output: "json"},
 	)
 	require.NoError(t, err)
 }
@@ -332,9 +345,76 @@ func TestTagsUnavailable_AllVerbs(t *testing.T) {
 
 func TestRunToolboxUpdate_MissingDefaultVersion(t *testing.T) {
 	err := runToolboxUpdate(
-		context.Background(), "tb",
+		t.Context(), "tb",
 		toolboxUpdateFlags{},
 		toolboxFlags{output: "table"},
 	)
 	requireLocalError(t, err, exterrors.CodeMissingUpdateField)
+}
+
+// Pending-record promotion path (§ 8): POST v1 with the carried-forward
+// description, then clear the record.
+func TestRunConnectionAddWith_PendingPromotion(t *testing.T) {
+	client := newMockToolboxClient("https://e/")
+	resolver := newStubConnectionResolver()
+	resolver.byName["my-mcp"] = &projectConnection{
+		ID:       "/c/my-mcp",
+		Category: azure.ConnectionTypeRemoteTool,
+		Name:     "my-mcp",
+		Target:   "https://mcp.example.com",
+	}
+
+	store := newStubPendingStore()
+	store.records[store.key("https://e/", "tb")] = &PendingToolbox{
+		Description: "Research-time toolset",
+		CreatedAt:   "2026-05-12T10:23:00Z",
+	}
+
+	err := runConnectionAddWith(
+		t.Context(), client, resolver, store, "https://e/",
+		"tb", "my-mcp", connectionAddFlags{}, toolboxFlags{output: "json"},
+	)
+	require.NoError(t, err)
+	require.Len(t, client.createVersionCalls, 1, "v1 must be POSTed")
+	assert.Equal(t, "Research-time toolset", client.createVersionCalls[0].req.Description,
+		"description from pending record must be carried forward")
+	assert.Len(t, client.createVersionCalls[0].req.Tools, 1)
+	assert.Empty(t, client.setDefaultCalls, "first version is default automatically; no PATCH")
+	assert.Equal(t, 1, store.clearCalls, "pending record must be cleared")
+	assert.Empty(t, store.records, "pending record must be removed after success")
+}
+
+// A pending-store read failure must surface as Internal, not silently fall
+// through to a misleading CodeToolboxNotFound.
+func TestRunConnectionAddWith_PendingStoreFailureSurfaces(t *testing.T) {
+	client := newMockToolboxClient("https://e/")
+	resolver := newStubConnectionResolver()
+	resolver.byName["c"] = &projectConnection{
+		ID: "/c/c", Category: azure.ConnectionTypeRemoteTool, Name: "c",
+		Target: "https://mcp.example.com",
+	}
+
+	store := newStubPendingStore()
+	store.getErr = errors.New("config read failed")
+
+	err := runConnectionAddWith(
+		t.Context(), client, resolver, store, "https://e/",
+		"tb", "c", connectionAddFlags{}, toolboxFlags{output: "table"},
+	)
+	requireLocalError(t, err, exterrors.CodePendingToolboxStoreFailed)
+	assert.Empty(t, client.createVersionCalls,
+		"existing-toolbox branch must not be entered when the pending store fails")
+}
+
+// Client-side ^[A-Za-z0-9_-]+$ enforcement on tool entry names (§ 4.2).
+func TestBuildToolEntry_RejectsInvalidName(t *testing.T) {
+	_, err := buildToolEntry(&projectConnection{
+		ID:       "/c/x",
+		Category: azure.ConnectionTypeRemoteTool,
+		Name:     "tools.v1", // dot is not in ^[A-Za-z0-9_-]+$
+		Target:   "https://mcp",
+	}, "")
+	le := requireLocalError(t, err, exterrors.CodeInvalidToolboxName)
+	assert.Contains(t, le.Message, "tool entry name")
+	assert.Contains(t, le.Message, "tools.v1")
 }

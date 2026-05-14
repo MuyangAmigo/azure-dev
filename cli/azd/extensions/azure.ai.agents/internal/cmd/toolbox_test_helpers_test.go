@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 
 	"azureaiagent/internal/pkg/azure"
@@ -14,14 +15,9 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 )
 
-// mockToolboxClient is a table-driven test stub for the toolboxClient interface.
-//
-// Each method returns a value/error pair recorded by the test setup, and tracks
-// the invocation count so tests can assert call shape without spinning up an
-// HTTP server.
-//
-// Concurrency: all field accesses are protected by mu so race-detector runs
-// stay clean even though current tests are sequential.
+// mockToolboxClient is a test stub for the toolboxClient interface. Each
+// method returns a configured value/error and records call shape; mu keeps
+// race-detector runs clean.
 type mockToolboxClient struct {
 	mu sync.Mutex
 
@@ -73,8 +69,7 @@ type deleteVersionCall struct {
 	name, version string
 }
 
-// newMockToolboxClient seeds an empty mock with an explicit endpoint so
-// callers don't have to populate every map.
+// newMockToolboxClient seeds an empty mock bound to the given endpoint.
 func newMockToolboxClient(endpoint string) *mockToolboxClient {
 	return &mockToolboxClient{
 		endpoint:            endpoint,
@@ -177,15 +172,21 @@ func (m *mockToolboxClient) SetDefaultVersion(
 	return &azure.ToolboxObject{Name: name, DefaultVersion: version}, nil
 }
 
-// notFoundResponseError builds a synthetic azcore.ResponseError with HTTP 404
-// so isAzureNotFound returns true in tests without an HTTP round-trip.
+// notFoundResponseError builds a synthetic *azcore.ResponseError with HTTP 404
+// and a fully-populated http.Request so isAzureNotFound returns true and
+// downstream URL-aware formatters do not panic.
 func notFoundResponseError(message string) error {
+	stubURL, _ := url.Parse("https://stub.test/synthetic-404")
 	return &azcore.ResponseError{
 		StatusCode: http.StatusNotFound,
-		ErrorCode:  "not_found",
+		ErrorCode:  message,
 		RawResponse: &http.Response{
 			StatusCode: http.StatusNotFound,
-			Request:    &http.Request{Host: "stub.test"},
+			Request: &http.Request{
+				Host:   "stub.test",
+				Method: http.MethodGet,
+				URL:    stubURL,
+			},
 		},
 	}
 }
@@ -218,3 +219,41 @@ func (s *stubConnectionResolver) resolveConnection(
 // compile-time guard.
 var _ toolboxClient = (*mockToolboxClient)(nil)
 var _ connectionResolver = (*stubConnectionResolver)(nil)
+var _ pendingToolboxStore = (*stubPendingStore)(nil)
+
+// stubPendingStore is the in-memory pendingToolboxStore for unit tests.
+// getErr/clearErr inject failures to exercise error-handling branches.
+type stubPendingStore struct {
+	records    map[string]*PendingToolbox
+	getErr     error
+	clearErr   error
+	getCalls   int
+	clearCalls int
+}
+
+func newStubPendingStore() *stubPendingStore {
+	return &stubPendingStore{records: map[string]*PendingToolbox{}}
+}
+
+func (s *stubPendingStore) key(endpoint, name string) string {
+	return endpoint + "::" + name
+}
+
+func (s *stubPendingStore) Get(_ context.Context, endpoint, name string) (*PendingToolbox, error) {
+	s.getCalls++
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+	return s.records[s.key(endpoint, name)], nil
+}
+
+func (s *stubPendingStore) Clear(_ context.Context, endpoint, name string) (bool, error) {
+	s.clearCalls++
+	if s.clearErr != nil {
+		return false, s.clearErr
+	}
+	k := s.key(endpoint, name)
+	_, ok := s.records[k]
+	delete(s.records, k)
+	return ok, nil
+}

@@ -5,8 +5,8 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"azureaiagent/internal/exterrors"
@@ -72,11 +72,7 @@ the toolbox default is retargeted.`,
 		&flags.index, "index", "",
 		"Index name (required when the connection's category is CognitiveSearch).",
 	)
-	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
-		Name:          "output",
-		AllowedValues: []string{"table", "json"},
-		Default:       "table",
-	})
+	registerToolboxOutputFlag(cmd)
 	return cmd
 }
 
@@ -105,13 +101,21 @@ func runConnectionAdd(
 	}
 	logResolvedEndpoint("toolbox connection add", resolved)
 
-	return runConnectionAddWith(ctx, client, resolver, resolved.Endpoint,
+	store, closer, err := newAzdPendingToolboxStore()
+	if err != nil {
+		return exterrors.Internal(exterrors.CodeAzdClientFailed,
+			fmt.Sprintf("failed to open the pending-toolbox store: %s", err))
+	}
+	defer closer()
+
+	return runConnectionAddWith(ctx, client, resolver, store, resolved.Endpoint,
 		toolboxName, connName, verb, parent)
 }
 
-// runConnectionAddWith is the testable core: takes both clients as parameters.
+// runConnectionAddWith is the testable core.
 func runConnectionAddWith(
 	ctx context.Context, client toolboxClient, resolver connectionResolver,
+	store pendingToolboxStore,
 	endpoint, toolboxName, connName string,
 	verb connectionAddFlags, parent toolboxFlags,
 ) error {
@@ -126,37 +130,44 @@ func runConnectionAddWith(
 	}
 
 	// Pending-promotion path: if a pending record exists, POST v1 directly.
-	azdClient, _ := azdext.NewAzdClient()
-	if azdClient != nil {
-		defer azdClient.Close()
+	// A store-read failure must not silently fall through to the live-toolbox
+	// branch (which would 404 and report CodeToolboxNotFound).
+	pending, err := store.Get(ctx, endpoint, toolboxName)
+	if err != nil {
+		return exterrors.Internal(
+			exterrors.CodePendingToolboxStoreFailed,
+			fmt.Sprintf("failed to read pending toolbox state: %s", err),
+		)
 	}
-
-	if azdClient != nil {
-		if pending, _ := getPendingToolbox(ctx, azdClient, endpoint, toolboxName); pending != nil {
-			req := &azure.CreateToolboxVersionRequest{
-				Description: pending.Description,
-				Tools:       []map[string]any{entry},
-			}
-			created, err := client.CreateToolboxVersion(ctx, toolboxName, req)
-			if err != nil {
-				return exterrors.ServiceFromAzure(err, exterrors.OpCreateToolboxVersion)
-			}
-			if _, err := clearPendingToolbox(ctx, azdClient, endpoint, toolboxName); err != nil {
-				return exterrors.Internal(exterrors.OpRegisterPendingToolbox, err.Error())
-			}
-			return emitConnectionAddResult(toolboxName, created.Version, conn, parent.output, true)
+	if pending != nil {
+		req := &azure.CreateToolboxVersionRequest{
+			Description: pending.Description,
+			Tools:       []map[string]any{entry},
 		}
+		created, err := client.CreateToolboxVersion(ctx, toolboxName, req)
+		if err != nil {
+			return exterrors.ServiceFromAzure(err, exterrors.OpCreateToolboxVersion)
+		}
+		if _, err := store.Clear(ctx, endpoint, toolboxName); err != nil {
+			return exterrors.Internal(
+				exterrors.CodePendingToolboxStoreFailed,
+				fmt.Sprintf("failed to clear pending toolbox record: %s", err),
+			)
+		}
+		return emitConnectionAddResult(toolboxName, created.Version, conn, parent.output, true)
 	}
 
 	// Existing-toolbox path: fetch default → append → POST → PATCH default_version.
 	tb, err := client.GetToolbox(ctx, toolboxName)
 	if err != nil {
 		if isAzureNotFound(err) {
-			return exterrors.Validation(
+			return exterrors.Dependency(
 				exterrors.CodeToolboxNotFound,
 				fmt.Sprintf("toolbox %q not found", toolboxName),
-				"run 'azd ai agent toolbox create "+toolboxName+
-					"' first, then re-run 'connection add'",
+				fmt.Sprintf(
+					"run 'azd ai agent toolbox create %q' first, then re-run 'connection add'",
+					toolboxName,
+				),
 			)
 		}
 		return exterrors.ServiceFromAzure(err, exterrors.OpGetToolbox)
@@ -174,11 +185,11 @@ func runConnectionAddWith(
 				"connection %q (%s) is already attached to toolbox %q",
 				connName, conn.ID, toolboxName,
 			),
-			"use 'connection list "+toolboxName+"' to inspect current tools",
+			fmt.Sprintf("use 'connection list %q' to inspect current tools", toolboxName),
 		)
 	}
 
-	newTools := append([]map[string]any{}, current.Tools...)
+	newTools := slices.Clone(current.Tools)
 	newTools = append(newTools, entry)
 
 	req := &azure.CreateToolboxVersionRequest{
@@ -199,8 +210,12 @@ func runConnectionAddWith(
 }
 
 // buildToolEntry returns the tool-entry map appropriate for the connection's
-// category. Enforces the --index flag rules from § 5.6.
+// category. Enforces the --index flag rules from § 5.6 and the `tool.name`
+// regex from § 4.2.
 func buildToolEntry(conn *projectConnection, index string) (map[string]any, error) {
+	if err := validateToolName(conn.Name); err != nil {
+		return nil, err
+	}
 	switch conn.Category {
 	case azure.ConnectionTypeRemoteTool:
 		if index != "" {
@@ -212,6 +227,17 @@ func buildToolEntry(conn *projectConnection, index string) (map[string]any, erro
 					conn.Name, conn.Category,
 				),
 				"omit --index for RemoteTool (MCP) connections",
+			)
+		}
+		// Reject locally rather than letting the service produce a generic 400.
+		if strings.TrimSpace(conn.Target) == "" {
+			return nil, exterrors.Validation(
+				exterrors.CodeConnectionMissingTarget,
+				fmt.Sprintf(
+					"connection %q is a RemoteTool but has no target URL",
+					conn.Name,
+				),
+				"set the target on the project connection (this is the MCP server URL)",
 			)
 		}
 		return map[string]any{
@@ -259,26 +285,17 @@ func buildToolEntry(conn *projectConnection, index string) (map[string]any, erro
 }
 
 // duplicateConnectionInTools reports whether any tool entry already references
-// the given project_connection_id (top-level for mcp, nested under
-// azure_ai_search.indexes for search tools).
+// the given project_connection_id.
 func duplicateConnectionInTools(tools []map[string]any, connID string) bool {
-	for _, t := range tools {
-		if id, ok := t["project_connection_id"].(string); ok && id == connID {
+	found := false
+	forEachToolConnectionID(tools, func(id string) bool {
+		if id == connID {
+			found = true
 			return true
 		}
-		if search, ok := t["azure_ai_search"].(map[string]any); ok {
-			if indexes, ok := search["indexes"].([]any); ok {
-				for _, idx := range indexes {
-					if m, ok := idx.(map[string]any); ok {
-						if id, ok := m["project_connection_id"].(string); ok && id == connID {
-							return true
-						}
-					}
-				}
-			}
-		}
-	}
-	return false
+		return false
+	})
+	return found
 }
 
 // emitConnectionAddResult prints the standard output for a successful add.
@@ -294,12 +311,7 @@ func emitConnectionAddResult(
 			"category":            string(conn.Category),
 			"promotedFromPending": promoted,
 		}
-		data, err := json.MarshalIndent(payload, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal add result: %w", err)
-		}
-		fmt.Println(string(data))
-		return nil
+		return emitJSON(payload)
 	}
 	if promoted {
 		fmt.Printf(

@@ -5,7 +5,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -21,12 +20,8 @@ type toolboxCreateFlags struct {
 }
 
 // newToolboxCreateCommand returns the `azd ai agent toolbox create <name>` command.
-//
-// `create` does not issue a service POST: the service requires a non-empty
-// `tools[]` on the first POST (§ 4.2). Instead it records a local pending-toolbox
-// entry under extensions.ai-agents.pending-toolboxes.<endpointHash>.items.<name>
-// (§ 5.1). The first subsequent `connection add` reads this record, POSTs v1,
-// and clears it.
+// `create` records a local pending entry; v1 is POSTed on the first
+// `connection add` (§ 5.1 / § 4.2).
 func newToolboxCreateCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
 	extCtx = ensureExtensionContext(extCtx)
 	flags := &toolboxCreateFlags{}
@@ -50,11 +45,7 @@ pending record.`,
 		&flags.description, "description", "",
 		"Optional description recorded with the toolbox.",
 	)
-	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
-		Name:          "output",
-		AllowedValues: []string{"table", "json"},
-		Default:       "table",
-	})
+	registerToolboxOutputFlag(cmd)
 
 	return cmd
 }
@@ -88,19 +79,17 @@ func runToolboxCreate(
 	}
 
 	// New name → record a pending entry.
-	azdClient, err := azdext.NewAzdClient()
-	if err != nil {
-		return exterrors.Internal(exterrors.CodeAzdClientFailed,
-			fmt.Sprintf("failed to create azd client: %s", err))
-	}
-	defer azdClient.Close()
-
-	record := PendingToolbox{
-		Description: verb.description,
-		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-	}
-	if err := setPendingToolbox(ctx, azdClient, resolved.Endpoint, name, record); err != nil {
-		return exterrors.Internal(exterrors.OpRegisterPendingToolbox, err.Error())
+	if err := withAzdClient(func(azdClient *azdext.AzdClient) error {
+		record := PendingToolbox{
+			Description: verb.description,
+			CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := setPendingToolbox(ctx, azdClient, resolved.Endpoint, name, record); err != nil {
+			return exterrors.Internal(exterrors.CodePendingToolboxStoreFailed, err.Error())
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	return emitCreateResult(name, false, parent.output, verb, resolved.Endpoint)
@@ -120,12 +109,7 @@ func emitCreateResult(
 			"endpoint":      endpoint,
 			"alreadyExists": alreadyExists,
 		}
-		data, err := json.MarshalIndent(payload, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal create result: %w", err)
-		}
-		fmt.Println(string(data))
-		return nil
+		return emitJSON(payload)
 	}
 
 	if alreadyExists {

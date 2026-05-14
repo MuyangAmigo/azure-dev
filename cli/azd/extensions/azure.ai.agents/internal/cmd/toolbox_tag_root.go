@@ -10,16 +10,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// The Foundry data plane does not expose a /tags endpoint, and toolboxes are
-// not surfaced as ARM resources (no subscriptions/… IDs in any toolbox response).
-// All three tag verbs return a Compatibility error in v1 per § 4.4 / § 5.7.
-// The CLI surface contract (positional args, flag set, command tree) is final
-// and will not change when these verbs are activated, so consumers can wire
-// scripts today.
+// Tag verbs are Compatibility stubs in v1 per § 4.4 / § 5.7: the Foundry data
+// plane has no /tags endpoint and toolboxes are not ARM resources. The CLI
+// surface contract is final so scripts written today will keep working.
 
 const toolboxTagsUnavailableMessage = "toolbox tags are not yet supported on the Foundry data plane"
 
-// newToolboxTagCommand returns the `azd ai agent toolbox tag` parent.
 func newToolboxTagCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
 	extCtx = ensureExtensionContext(extCtx)
 	cmd := &cobra.Command{
@@ -37,8 +33,7 @@ it today will continue to work once the underlying API is available.`,
 	return cmd
 }
 
-func newToolboxTagSetCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
-	_ = ensureExtensionContext(extCtx)
+func newToolboxTagSetCommand(_ *azdext.ExtensionContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set <toolbox> KEY=VALUE [KEY=VALUE ...]",
 		Short: "Set tags on a toolbox (Compatibility stub).",
@@ -47,16 +42,11 @@ func newToolboxTagSetCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
 			return tagsUnavailable()
 		},
 	}
-	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
-		Name:          "output",
-		AllowedValues: []string{"table", "json"},
-		Default:       "table",
-	})
+	registerToolboxOutputFlag(cmd)
 	return cmd
 }
 
-func newToolboxTagRemoveCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
-	_ = ensureExtensionContext(extCtx)
+func newToolboxTagRemoveCommand(_ *azdext.ExtensionContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remove <toolbox> KEY [KEY ...]",
 		Short: "Remove tags from a toolbox (Compatibility stub).",
@@ -65,16 +55,11 @@ func newToolboxTagRemoveCommand(extCtx *azdext.ExtensionContext) *cobra.Command 
 			return tagsUnavailable()
 		},
 	}
-	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
-		Name:          "output",
-		AllowedValues: []string{"table", "json"},
-		Default:       "table",
-	})
+	registerToolboxOutputFlag(cmd)
 	return cmd
 }
 
-func newToolboxTagListCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
-	_ = ensureExtensionContext(extCtx)
+func newToolboxTagListCommand(_ *azdext.ExtensionContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list <toolbox>",
 		Short: "List tags on a toolbox (Compatibility stub).",
@@ -83,11 +68,7 @@ func newToolboxTagListCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
 			return tagsUnavailable()
 		},
 	}
-	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
-		Name:          "output",
-		AllowedValues: []string{"table", "json"},
-		Default:       "table",
-	})
+	registerToolboxOutputFlag(cmd)
 	return cmd
 }
 
@@ -95,6 +76,7 @@ func tagsUnavailable() error {
 	return exterrors.Compatibility(
 		exterrors.CodeToolboxTagsUnavailable,
 		toolboxTagsUnavailableMessage,
-		"",
+		"as a workaround, attach key/value metadata via the version metadata "+
+			"field when republishing the toolbox",
 	)
 }

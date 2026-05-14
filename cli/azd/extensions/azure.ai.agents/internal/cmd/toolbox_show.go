@@ -5,8 +5,9 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"log"
+	"net/url"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -49,11 +50,7 @@ yet), the command emits a pending-toolbox view and rejects --version.`,
 		&flags.version, "version", "",
 		"Specific version to show. Defaults to the server's default_version.",
 	)
-	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
-		Name:          "output",
-		AllowedValues: []string{"table", "json"},
-		Default:       "table",
-	})
+	registerToolboxOutputFlag(cmd)
 
 	return cmd
 }
@@ -98,10 +95,10 @@ func runToolboxShowWith(
 	version, err := client.GetToolboxVersion(ctx, name, shownVersion)
 	if err != nil {
 		if isAzureNotFound(err) {
-			return exterrors.Validation(
+			return exterrors.Dependency(
 				exterrors.CodeToolboxNotFound,
 				fmt.Sprintf("version %q of toolbox %q not found", shownVersion, name),
-				"run 'azd ai agent toolbox show "+name+"' to see the default version",
+				fmt.Sprintf("run 'azd ai agent toolbox show %q' to see the default version", name),
 			)
 		}
 		return exterrors.ServiceFromAzure(err, exterrors.OpGetToolboxVersion)
@@ -116,29 +113,32 @@ func runToolboxShowWith(
 }
 
 // showPendingOrNotFound handles the 404 branch: either render the pending-toolbox
-// view (§ 5.4.1) or surface a structured ErrToolboxNotFound.
+// view (§ 5.4.1) or surface a structured Dependency(CodeToolboxNotFound).
 func showPendingOrNotFound(
 	ctx context.Context, endpoint, name string,
 	verb toolboxShowFlags, parent toolboxFlags,
 ) error {
-	azdClient, err := azdext.NewAzdClient()
-	if err != nil {
-		return exterrors.Validation(
-			exterrors.CodeToolboxNotFound,
-			fmt.Sprintf("toolbox %q not found at %s", name, endpoint),
-			"run 'azd ai agent toolbox list' to see available toolboxes",
-		)
-	}
-	defer azdClient.Close()
+	return withAzdClient(func(azdClient *azdext.AzdClient) error {
+		pending, err := getPendingToolbox(ctx, azdClient, endpoint, name)
+		if err != nil {
+			log.Printf("toolbox show: pending-toolbox read failed for %q: %v", name, err)
+		}
+		if pending == nil {
+			return exterrors.Dependency(
+				exterrors.CodeToolboxNotFound,
+				fmt.Sprintf("toolbox %q not found at %s", name, endpoint),
+				"run 'azd ai agent toolbox list' to see available toolboxes",
+			)
+		}
 
-	pending, _ := getPendingToolbox(ctx, azdClient, endpoint, name)
-	if pending == nil {
-		return exterrors.Validation(
-			exterrors.CodeToolboxNotFound,
-			fmt.Sprintf("toolbox %q not found at %s", name, endpoint),
-			"run 'azd ai agent toolbox list' to see available toolboxes",
-		)
-	}
+		return renderPendingShow(name, verb, parent, pending)
+	})
+}
+
+// renderPendingShow emits the pending-toolbox view (§ 5.4.1).
+func renderPendingShow(
+	name string, verb toolboxShowFlags, parent toolboxFlags, pending *PendingToolbox,
+) error {
 
 	if verb.version != "" {
 		return exterrors.Validation(
@@ -147,7 +147,10 @@ func showPendingOrNotFound(
 				"toolbox %q has no published versions yet; --version cannot be used",
 				name,
 			),
-			"run 'azd ai agent toolbox connection add "+name+" <connection>' to publish v1 first",
+			fmt.Sprintf(
+				"run 'azd ai agent toolbox connection add %q <connection>' to publish v1 first",
+				name,
+			),
 		)
 	}
 
@@ -162,12 +165,7 @@ func showPendingOrNotFound(
 			"version":  nil,
 			"endpoint": nil,
 		}
-		data, jerr := json.MarshalIndent(payload, "", "  ")
-		if jerr != nil {
-			return fmt.Errorf("failed to marshal pending view: %w", jerr)
-		}
-		fmt.Println(string(data))
-		return nil
+		return emitJSON(payload)
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -181,17 +179,20 @@ func showPendingOrNotFound(
 		return err
 	}
 	fmt.Printf(
-		"\nRun `azd ai agent toolbox connection add %s <connection>` to publish v1.\n",
+		"\nRun `azd ai agent toolbox connection add %q <connection>` to publish v1.\n",
 		name,
 	)
 	return nil
 }
 
-// buildToolboxMcpURL computes the runtime MCP consumption URL per § 4.1 last row.
+// buildToolboxMcpURL computes the runtime MCP consumption URL (§ 4.1).
+// version is service-supplied so both segments are PathEscaped.
 func buildToolboxMcpURL(endpoint, name, version string) string {
 	return fmt.Sprintf(
 		"%s/toolboxes/%s/versions/%s/mcp?api-version=v1",
-		strings.TrimRight(endpoint, "/"), name, version,
+		strings.TrimRight(endpoint, "/"),
+		url.PathEscape(name),
+		url.PathEscape(version),
 	)
 }
 
@@ -199,17 +200,11 @@ func buildToolboxMcpURL(endpoint, name, version string) string {
 func emitShowJSON(
 	tb *azure.ToolboxObject, version *azure.ToolboxVersionObject, mcpURL string,
 ) error {
-	payload := map[string]any{
+	return emitJSON(map[string]any{
 		"toolbox":  tb,
 		"version":  version,
 		"endpoint": mcpURL,
-	}
-	data, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal show result: %w", err)
-	}
-	fmt.Println(string(data))
-	return nil
+	})
 }
 
 // emitShowTable renders the table format defined in § 5.4.
@@ -253,20 +248,22 @@ func describeToolDetail(toolType string, tool map[string]any) string {
 	switch toolType {
 	case "code_interpreter", "web_search", "file_search":
 		return "(builtin)"
-	case "mcp":
-		if id, ok := tool["project_connection_id"].(string); ok && id != "" {
+	case "mcp", "azure_ai_search":
+		if id := firstConnectionID(tool); id != "" {
 			return "(connection:" + id + ")"
-		}
-	case "azure_ai_search":
-		if search, ok := tool["azure_ai_search"].(map[string]any); ok {
-			if indexes, ok := search["indexes"].([]any); ok && len(indexes) > 0 {
-				if first, ok := indexes[0].(map[string]any); ok {
-					if id, ok := first["project_connection_id"].(string); ok && id != "" {
-						return "(connection:" + id + ")"
-					}
-				}
-			}
 		}
 	}
 	return ""
+}
+
+// firstConnectionID returns the first project_connection_id referenced by a
+// tool entry — top-level on `mcp` tools, or nested under
+// azure_ai_search.indexes[] for search tools.
+func firstConnectionID(tool map[string]any) string {
+	var found string
+	toolEntryReferences(tool, func(id string) bool {
+		found = id
+		return true // stop at the first hit
+	})
+	return found
 }

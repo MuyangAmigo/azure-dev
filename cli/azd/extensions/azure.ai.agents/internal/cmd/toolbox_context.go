@@ -5,7 +5,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -38,18 +37,15 @@ type ResolvedProjectEndpoint struct {
 	Source   resolvedEndpointSource
 }
 
-// resolveProjectEndpoint walks the toolbox endpoint cascade:
+// resolveProjectEndpoint walks the 5-level cascade from § 6:
 //  1. --project-endpoint flag
 //  2. active azd env value AZURE_AI_PROJECT_ENDPOINT
 //  3. global config extensions.ai-agents.context.endpoint
 //  4. environment variable FOUNDRY_PROJECT_ENDPOINT
 //  5. structured exterrors.Dependency error
 //
-// Every candidate is run through validateProjectEndpoint at the cascade level
-// where it was supplied — a malformed value at any level short-circuits with
-// CodeInvalidProjectEndpoint so we never produce broken downstream URLs.
-//
-// Pass an empty `flagEndpoint` when the command did not receive `--project-endpoint`.
+// Every candidate is validated; a malformed value at any level short-circuits
+// with CodeInvalidProjectEndpoint.
 func resolveProjectEndpoint(ctx context.Context, flagEndpoint string) (*ResolvedProjectEndpoint, error) {
 	if v := strings.TrimSpace(flagEndpoint); v != "" {
 		trimmed, err := validateProjectEndpoint(v, endpointSourceFlag)
@@ -59,9 +55,11 @@ func resolveProjectEndpoint(ctx context.Context, flagEndpoint string) (*Resolved
 		return &ResolvedProjectEndpoint{Endpoint: trimmed, Source: endpointSourceFlag}, nil
 	}
 
-	// Level 2 + 3 need an azd host client. Failure to build the client is not fatal —
-	// fall through to the env-var level so the toolbox commands keep working outside an azd project.
-	azdClient, _ := azdext.NewAzdClient()
+	// Levels 2 and 3 need an azd host client; a missing client just falls through.
+	azdClient, azdErr := azdext.NewAzdClient()
+	if azdErr != nil {
+		log.Printf("project-endpoint resolver: azd client unavailable, skipping env/user-config levels: %v", azdErr)
+	}
 	if azdClient != nil {
 		defer azdClient.Close()
 
@@ -209,9 +207,8 @@ func newToolboxClient(endpoint string) (*azure.FoundryToolboxClient, error) {
 	return azure.NewFoundryToolboxClient(endpoint, cred), nil
 }
 
-// newProjectsClient builds a FoundryProjectsClient for ARM-style connection lookups.
-// The toolbox commands need only the data-plane Connection metadata (ARM `id`, `type`/category,
-// and `target`) — see § 5.6 of the design spec. The data-plane client already exposes these.
+// newProjectsClientFromEndpoint builds a FoundryProjectsClient bound to the
+// account+project parsed out of the toolbox endpoint URL.
 func newProjectsClientFromEndpoint(endpoint string) (*azure.FoundryProjectsClient, error) {
 	account, project, err := parseAccountProjectFromEndpoint(endpoint)
 	if err != nil {
@@ -250,15 +247,10 @@ func parseAccountProjectFromEndpoint(endpoint string) (account, project string, 
 	return hostPart, projectName, nil
 }
 
-// logResolvedEndpoint is a thin helper used by commands to record the resolved source
-// to the debug log without polluting user-facing output.
+// logResolvedEndpoint records the resolved endpoint and source to --debug.
 func logResolvedEndpoint(verb string, r *ResolvedProjectEndpoint) {
 	if r == nil {
 		return
 	}
 	log.Printf("%s: resolved project endpoint %s (source=%s)", verb, r.Endpoint, r.Source)
 }
-
-// ErrToolboxNotFound is returned from `show` when the named toolbox does not exist
-// on the service and has no pending record. Callers convert it to a structured error.
-var ErrToolboxNotFound = errors.New("toolbox not found")

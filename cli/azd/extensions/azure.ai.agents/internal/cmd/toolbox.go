@@ -19,21 +19,16 @@ import (
 )
 
 // toolboxFlags carries the cross-cutting flags shared by every `toolbox` verb.
-//
-// `projectEndpoint` is registered as a persistent flag on the toolbox parent so
-// all subcommands inherit it.
 type toolboxFlags struct {
 	projectEndpoint string
 	output          string
 	noPrompt        bool
 }
 
-// toolboxNamePattern is the validation regex for toolbox and tool names
-// per § 4.2: `^[A-Za-z0-9_-]+$`.
+// toolboxNamePattern is the validation regex for toolbox and tool names per § 4.2.
 var toolboxNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // newToolboxCommand builds the `azd ai agent toolbox` parent.
-// All toolbox CRUD verbs and the connection/tag subgroups hang off this command.
 func newToolboxCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
 	extCtx = ensureExtensionContext(extCtx)
 
@@ -48,9 +43,8 @@ tool list; mutations publish a new version and (after the first POST) require
 an explicit update to retarget the default.`,
 	}
 
-	// Persistent flags inherited by every subcommand.
-	// NOTE: --output and --no-prompt are reserved azd globals and are inherited
-	// automatically; we register only the extension-specific flag here.
+	// --output and --no-prompt are reserved azd globals and are inherited
+	// automatically; only the extension-specific flag is registered here.
 	cmd.PersistentFlags().String(
 		"project-endpoint", "",
 		"Foundry project endpoint URL. When unset, falls back to the active azd "+
@@ -69,8 +63,7 @@ an explicit update to retarget the default.`,
 }
 
 // readToolboxFlags extracts the persistent flag values from a subcommand. The
-// reserved azd globals `--output` and `--no-prompt` are read from extCtx
-// (populated by the SDK).
+// reserved azd globals `--output` and `--no-prompt` come from extCtx.
 func readToolboxFlags(cmd *cobra.Command, extCtx *azdext.ExtensionContext) toolboxFlags {
 	pe, _ := cmd.Flags().GetString("project-endpoint")
 	out := ""
@@ -83,6 +76,8 @@ func readToolboxFlags(cmd *cobra.Command, extCtx *azdext.ExtensionContext) toolb
 }
 
 // validateOutputFormat returns a structured error when --output is not table/json.
+// The azd host normally enforces this via RegisterFlagOptions; the check stays
+// for direct `azd x` invocation and for unit-test reach.
 func validateOutputFormat(out string) error {
 	switch strings.ToLower(out) {
 	case "", "table", "json":
@@ -96,14 +91,41 @@ func validateOutputFormat(out string) error {
 	}
 }
 
-// validateToolboxName enforces the `^[A-Za-z0-9_-]+$` shape from § 4.2.
-// Called by every verb that accepts a `<name>` positional.
+// registerToolboxOutputFlag attaches the --output annotations every toolbox
+// leaf command shares. RegisterFlagOptions writes per-command annotations, so
+// it must run on each leaf rather than the parent.
+func registerToolboxOutputFlag(cmd *cobra.Command) {
+	azdext.RegisterFlagOptions(cmd, azdext.FlagOptions{
+		Name:          "output",
+		AllowedValues: []string{"table", "json"},
+		Default:       "table",
+	})
+}
+
+// validateToolboxName enforces ^[A-Za-z0-9_-]+$ on the positional `<name>`.
 func validateToolboxName(name string) error {
 	if !toolboxNamePattern.MatchString(name) {
 		return exterrors.Validation(
 			exterrors.CodeInvalidToolboxName,
 			fmt.Sprintf("toolbox name %q is invalid", name),
 			"names must match ^[A-Za-z0-9_-]+$",
+		)
+	}
+	return nil
+}
+
+// validateToolName enforces the same regex on tool-entry names. Failing here
+// avoids a service round trip that would yield a generic 400.
+func validateToolName(name string) error {
+	if !toolboxNamePattern.MatchString(name) {
+		return exterrors.Validation(
+			exterrors.CodeInvalidToolboxName,
+			fmt.Sprintf(
+				"tool entry name %q is invalid; the Foundry service requires names "+
+					"to match ^[A-Za-z0-9_-]+$",
+				name,
+			),
+			"rename the project connection so its short name matches the regex",
 		)
 	}
 	return nil
