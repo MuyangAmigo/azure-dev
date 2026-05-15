@@ -57,7 +57,6 @@ an explicit update to retarget the default.`,
 	cmd.AddCommand(newToolboxShowCommand(extCtx))
 	cmd.AddCommand(newToolboxListCommand(extCtx))
 	cmd.AddCommand(newToolboxConnectionCommand(extCtx))
-	cmd.AddCommand(newToolboxTagCommand(extCtx))
 
 	return cmd
 }

@@ -337,12 +337,6 @@ func TestRunConnectionListWith_EmitsAllShapes(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestTagsUnavailable_AllVerbs(t *testing.T) {
-	err := tagsUnavailable()
-	le := requireLocalError(t, err, exterrors.CodeToolboxTagsUnavailable)
-	assert.Equal(t, "compatibility", string(le.Category))
-}
-
 func TestRunToolboxUpdate_MissingDefaultVersion(t *testing.T) {
 	err := runToolboxUpdate(
 		t.Context(), "tb",

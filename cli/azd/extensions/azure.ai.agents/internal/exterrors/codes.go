@@ -119,7 +119,6 @@ const (
 	CodeConnectionMissingTarget       = "connection_missing_target"
 	CodeLastToolRemoval               = "last_tool_removal"
 	CodeMissingForceFlag              = "missing_force_flag"
-	CodeToolboxTagsUnavailable        = "toolbox_tags_unavailable"
 	CodeInvalidToolboxName            = "invalid_toolbox_name"
 	CodePendingToolboxStoreFailed     = "pending_toolbox_store_failed"
 )
