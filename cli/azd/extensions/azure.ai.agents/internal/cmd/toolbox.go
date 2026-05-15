@@ -50,6 +50,10 @@ an explicit update to retarget the default.`,
 		"Foundry project endpoint URL. When unset, falls back to the active azd "+
 			"environment, azd user config, then FOUNDRY_PROJECT_ENDPOINT.",
 	)
+	// Advertise the toolbox-specific --output allowed values + default on the
+	// parent so `azd ai agent toolbox --help` shows them too. Leaf commands
+	// re-register on themselves; cobra annotations don't propagate.
+	registerToolboxOutputFlag(cmd)
 
 	cmd.AddCommand(newToolboxCreateCommand(extCtx))
 	cmd.AddCommand(newToolboxUpdateCommand(extCtx))
